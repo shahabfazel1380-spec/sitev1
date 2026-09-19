@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>کاربران استفاده‌کننده از {{ coupon.code }}</h1>
+
+<section class="panel">
+    <header>
+        <h2>جزئیات کد تخفیف</h2>
+    </header>
+    <p>
+        مبلغ: {{ format_amount(coupon.amount) }} تومان – ظرفیت هر کاربر: {{ coupon.usage_limit_per_user }} – ظرفیت کلی: {{ coupon.usage_limit }} – استفاده‌شده: {{ coupon.used_count }}
+    </p>
+    <p>
+        <a href="{{ url_for('coupons_page') }}" class="btn-ghost">⬅️ بازگشت به لیست کوپن‌ها</a>
+    </p>
+</section>
+
+<section class="panel">
+    <header><h2>لیست استفاده‌کنندگان</h2></header>
+    <table>
+        <thead>
+            <tr>
+                <th>کاربر</th>
+                <th>تعداد استفاده</th>
+                <th>آخرین استفاده</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for redemption in redemptions %}
+            <tr>
+                <td>
+                    <a href="{{ url_for('user_detail', user_id=redemption.user_id) }}" class="chip">{{ redemption.user_id }}</a>
+                </td>
+                <td>{{ redemption.times_used }}</td>
+                <td>{{ format_datetime(redemption.redeemed_at) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" class="empty">هیچ استفاده‌ای ثبت نشده است.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

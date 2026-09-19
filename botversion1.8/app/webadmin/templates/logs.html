@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>لاگ سیستم</h1>
+<p>برای دریافت لاگ ۵ دقیقهٔ اخیر ربات روی دکمه زیر بزنید.</p>
+<p>
+    <a class="btn" href="{{ url_for('logs_download') }}">⬇️ دانلود لاگ ۵ دقیقه اخیر</a>
+</p>
+{% endblock %}

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>کدهای تخفیف</h1>
+<p>کد تخفیف مبلغی از هزینهٔ محصول را کم می‌کند و به کیف پول واریز نمی‌شود.</p>
+
+<section class="card">
+    <h2>ساخت کد تخفیف جدید</h2>
+    <form method="post" action="{{ url_for('discount_create') }}" class="form-grid">
+        <label>
+            کد (در صورت خالی بودن به‌صورت تصادفی ساخته می‌شود)
+            <input type="text" name="code" maxlength="32" placeholder="AUTO" />
+        </label>
+        <label>
+            مبلغ تخفیف (تومان)
+            <input type="number" name="amount" min="1" required />
+        </label>
+        <label>
+            سقف استفاده هر کاربر
+            <input type="number" name="usage_limit_per_user" min="1" value="1" required />
+        </label>
+        <label>
+            ظرفیت کلی کد
+            <input type="number" name="usage_limit" min="1" value="1" required />
+        </label>
+        <label>
+            تاریخ انقضا (اختیاری)
+            <input type="date" name="expires_on" />
+        </label>
+        <label class="inline">
+            <input type="checkbox" name="applies_all" value="1" class="js-toggle-all" data-target="create-products" />
+            اعمال روی همهٔ محصولات
+        </label>
+        <label>
+            محصولات مجاز (اگر «همه محصولات» تیک خورده باشد غیرفعال می‌شود)
+            <select name="product_ids" id="create-products" multiple size="6">
+                {% for p in products %}
+                <option value="{{ p.id }}">{{ p.path_display }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <div class="form-actions">
+            <button type="submit">ثبت کد تخفیف</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h2>لیست کدهای تخفیف</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>کد</th>
+                <th>مبلغ</th>
+                <th>سقف هر کاربر</th>
+                <th>استفاده شده / ظرفیت</th>
+                <th>دامنه</th>
+                <th>انقضا</th>
+                <th>وضعیت</th>
+                <th>مدیریت</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for discount in discounts %}
+            <tr>
+                <td><strong>{{ discount.code }}</strong></td>
+                <td>{{ format_amount(discount.amount) }} تومان</td>
+                <td>{{ discount.usage_limit_per_user }}</td>
+                <td>{{ discount.used_count }} / {{ discount.usage_limit }}</td>
+                <td>
+                    {% if discount.applies_all %}
+                        همه محصولات
+                    {% elif discount.product_ids %}
+                        {% for pid in discount.product_ids %}
+                            {% for p in products %}
+                                {% if p.id == pid %}
+                                    <div class="tag">{{ p.path_display }}</div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endfor %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if discount.expires_value %}
+                        {{ format_datetime(discount.expires_value) }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if not discount.is_active %}
+                        <span class="badge error">غیرفعال</span>
+                    {% elif discount.is_expired %}
+                        <span class="badge warning">منقضی</span>
+                    {% elif discount.usage_limit and discount.used_count >= discount.usage_limit %}
+                        <span class="badge warning">تکمیل ظرفیت</span>
+                    {% else %}
+                        <span class="badge success">فعال</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div class="actions">
+                        <a class="btn-ghost" href="{{ url_for('discount_redemptions_page', discount_id=discount.id) }}">استفاده‌کنندگان</a>
+                        <form method="post" action="{{ url_for('discount_update', discount_id=discount.id) }}" class="form-inline">
+                            <input type="text" name="code" value="{{ discount.code }}" required>
+                            <input type="number" name="amount" min="1" value="{{ discount.amount }}" required>
+                            <input type="number" name="usage_limit_per_user" min="1" value="{{ discount.usage_limit_per_user }}" required>
+                            <input type="number" name="usage_limit" min="{{ discount.used_count if discount.used_count else 1 }}" value="{{ discount.usage_limit }}" required>
+                            <input type="date" name="expires_on" value="{{ discount.expires_value }}">
+                            <label class="inline">
+                                <input type="checkbox" name="applies_all" value="1" class="js-toggle-all" data-target="edit-{{ discount.id }}" {% if discount.applies_all %}checked{% endif %}>
+                                همه محصولات
+                            </label>
+                            <select name="product_ids" id="edit-{{ discount.id }}" multiple size="4" {% if discount.applies_all %}disabled{% endif %}>
+                                {% for p in products %}
+                                <option value="{{ p.id }}" {% if p.id in discount.product_ids %}selected{% endif %}>{{ p.path_display }}</option>
+                                {% endfor %}
+                            </select>
+                            <label class="inline">
+                                <input type="checkbox" name="is_active" value="1" {% if discount.is_active %}checked{% endif %}> فعال
+                            </label>
+                            <button type="submit">بروزرسانی</button>
+                        </form>
+                        <form method="post" action="{{ url_for('discount_toggle', discount_id=discount.id) }}">
+                            {% if discount.is_active %}
+                                <button type="submit" class="secondary">غیرفعال‌کردن</button>
+                            {% else %}
+                                <button type="submit" class="success">فعال‌کردن</button>
+                            {% endif %}
+                        </form>
+                        <form method="post" action="{{ url_for('discount_delete', discount_id=discount.id) }}" onsubmit="return confirm('حذف این کد تخفیف قطعی است. ادامه می‌دهید؟');">
+                            <button type="submit" class="danger">حذف</button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">کدی ثبت نشده است.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<script>
+    document.querySelectorAll('.js-toggle-all').forEach(function (el) {
+        el.addEventListener('change', function () {
+            const target = document.getElementById(el.dataset.target);
+            if (target) {
+                target.disabled = el.checked;
+            }
+        });
+        el.dispatchEvent(new Event('change'));
+    });
+</script>
+{% endblock %}
