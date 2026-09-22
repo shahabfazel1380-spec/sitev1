@@ -1,0 +1,23 @@
+[Unit]
+Description=Premium Store API
+After=network.target
+
+[Service]
+Type=simple
+User=premiumstore
+Group=premiumstore
+WorkingDirectory=/var/www/premiumstore
+EnvironmentFile=/etc/premiumstore.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/var/www/premiumstore/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/premiumstore
+
+[Install]
+WantedBy=multi-user.target
