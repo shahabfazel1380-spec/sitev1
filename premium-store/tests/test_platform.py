@@ -200,7 +200,7 @@ def test_product_draft_publish_revision_and_archive(owner_client):
     assert owner_client.put('/api/admin/products/'+str(pid),json=product_payload(published=True,revision=1)).status_code==409
     assert owner_client.post(f'/api/admin/products/{pid}/archive',json={'archived':True}).status_code==200
     assert owner_client.get('/api/products/'+str(pid)).status_code==404
-    assert owner_client.get('/api/admin/sync').json()['items']
+    assert owner_client.get('/api/admin/sync').status_code==404
 
 def test_block_customer_revokes_sessions(owner_client):
     customer=TestClient(app);data=login_customer(customer)

@@ -66,6 +66,7 @@ class Product(Base):
     period: Mapped[str] = mapped_column(String(100), default='اشتراک یک‌ماهه')
     badge: Mapped[str] = mapped_column(String(80), default='')
     available: Mapped[bool] = mapped_column(default=True)
+    require_credentials: Mapped[bool] = mapped_column(default=False)
     published: Mapped[bool] = mapped_column(default=False)
     archived: Mapped[bool] = mapped_column(default=False)
     sort_order: Mapped[int] = mapped_column(default=0)
@@ -188,17 +189,84 @@ class Audit(Base):
     target: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[int] = mapped_column(default=now, index=True)
 
-class SyncJob(Base):
-    __tablename__ = 'bot_sync_jobs'
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey('store_products.id'), index=True)
-    revision: Mapped[int]
-    status: Mapped[str] = mapped_column(String(15), default='pending')
-    attempts: Mapped[int] = mapped_column(default=0)
-    last_error: Mapped[str] = mapped_column(String(200), default='')
-    created_at: Mapped[int] = mapped_column(default=now)
-
 class SchemaVersion(Base):
     __tablename__ = 'schema_versions'
     version: Mapped[int] = mapped_column(primary_key=True)
     applied_at: Mapped[int] = mapped_column(default=now)
+
+class WalletEntry(Base):
+    __tablename__ = 'wallet_entries'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('web_users.id'), index=True)
+    amount: Mapped[int]
+    mode: Mapped[str] = mapped_column(String(10))
+    kind: Mapped[str] = mapped_column(String(30))
+    reference: Mapped[str] = mapped_column(String(150), unique=True)
+    note: Mapped[str] = mapped_column(String(500), default='')
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey('staff_accounts.id'))
+    created_at: Mapped[int] = mapped_column(default=now)
+
+class OrderExtra(Base):
+    __tablename__ = 'order_extras'
+    order_id: Mapped[str] = mapped_column(ForeignKey('web_orders.id'), primary_key=True)
+    wallet_used: Mapped[int] = mapped_column(default=0)
+    payable: Mapped[int]
+    mode: Mapped[str] = mapped_column(String(10))
+    refunded: Mapped[bool] = mapped_column(default=False)
+    credentials: Mapped[str] = mapped_column(Text, default='')
+
+class WalletTopup(Base):
+    __tablename__ = 'wallet_topups'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda:str(uuid4()))
+    user_id: Mapped[int] = mapped_column(ForeignKey('web_users.id'), index=True)
+    amount: Mapped[int]
+    mode: Mapped[str] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(15), default='pending')
+    request_key: Mapped[str] = mapped_column(String(36), unique=True)
+    created_at: Mapped[int] = mapped_column(default=now)
+
+class CustomerContact(Base):
+    __tablename__ = 'customer_contacts'
+    user_id: Mapped[int] = mapped_column(ForeignKey('web_users.id'), primary_key=True)
+    telegram_chat_id: Mapped[str] = mapped_column(String(30), default='')
+
+class OutgoingMessage(Base):
+    __tablename__ = 'outgoing_messages'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('web_users.id'), index=True)
+    channel: Mapped[str] = mapped_column(String(10))
+    body: Mapped[str] = mapped_column(Text)
+    reference: Mapped[str] = mapped_column(String(150), unique=True)
+    status: Mapped[str] = mapped_column(String(20), default='pending')
+    error: Mapped[str] = mapped_column(String(200), default='')
+    created_at: Mapped[int] = mapped_column(default=now)
+    updated_at: Mapped[int] = mapped_column(default=now)
+
+class ActivationCard(Base):
+    __tablename__ = 'activation_cards'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    label: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(20))
+    last_four: Mapped[str] = mapped_column(String(4))
+    number_hash: Mapped[str] = mapped_column(String(64), index=True)
+    number_encrypted: Mapped[str] = mapped_column(Text)
+    note: Mapped[str] = mapped_column(String(1000), default='')
+    active: Mapped[bool] = mapped_column(default=True)
+    revision: Mapped[int] = mapped_column(default=1)
+
+class Activation(Base):
+    __tablename__ = 'account_activations'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    card_id: Mapped[int] = mapped_column(ForeignKey('activation_cards.id'), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('web_users.id'), index=True)
+    order_id: Mapped[str | None] = mapped_column(ForeignKey('web_orders.id'), index=True)
+    service: Mapped[str] = mapped_column(String(150))
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    account: Mapped[str] = mapped_column(String(200), default='')
+    password_encrypted: Mapped[str] = mapped_column(Text, default='')
+    paid_at: Mapped[int]
+    renewal_at: Mapped[int] = mapped_column(default=0, index=True)
+    auto_renew: Mapped[bool] = mapped_column(default=False)
+    note: Mapped[str] = mapped_column(String(3000), default='')
+    active: Mapped[bool] = mapped_column(default=True)
+    revision: Mapped[int] = mapped_column(default=1)

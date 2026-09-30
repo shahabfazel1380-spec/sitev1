@@ -11,19 +11,24 @@ from . import settings
 from .db import DB
 from .models import Coupon, CouponUse, Order, OrderDetails, OrderItem, Product, Setting, now
 from .schemas import CheckoutRequest
+from .models import OrderExtra
+from .preferences import operations
+from .wallet import balance,entry,wallet_mode,release,expire_pending
+from .vault import seal
 from .security import Customer, customer
 
 router = APIRouter(prefix='/api')
 
 def product_data(p, admin=False):
-    fields = ['id','title','brand','category','icon','description','content','features','images','video','price','original_price','period','badge','available','sort_order']
+    fields = ['id','title','brand','category','icon','description','content','features','images','video','price','original_price','period','badge','available','sort_order','require_credentials']
     if admin:
         fields += ['published','archived','revision','updated_at']
     return {key:getattr(p,key) for key in fields}
 
 async def public_config(db):
     values = {s.key:s.value for s in (await db.scalars(select(Setting))).all()}
-    return {'payment_mode':settings.PAYMENT_MODE, 'sms_mode':settings.SMS_MODE,
+    cfg=await operations(db)
+    return {**cfg.model_dump(include={'store_name','chat_enabled','chat_offline_message','wallet_enabled','wallet_topup_enabled','wallet_min_topup','wallet_max_topup','credential_help'}),'payment_mode':settings.PAYMENT_MODE, 'sms_mode':settings.SMS_MODE,
             'support_url':values.get('support_url',''), 'bot_url':values.get('bot_url',''),
             'telegram_url':values.get('telegram_url','https://t.me/premiumstore'), 'instagram_url':values.get('instagram_url',''),
             'support_hours':values.get('support_hours','پاسخ‌گویی در اولین فرصت'), 'store_notice':values.get('store_notice','')}
@@ -75,35 +80,56 @@ async def quote(data, db, user_id):
 @router.post('/checkout/quote')
 async def checkout_quote(data: CheckoutRequest, db: DB, context: Customer = Depends(customer)):
     _, _, subtotal, discount, coupon = await quote(data, db, context.user.id)
-    return {'subtotal':subtotal, 'discount':discount, 'total_amount':subtotal-discount, 'coupon':coupon.code if coupon else ''}
+    cfg=await operations(db)
+    available=await balance(db,context.user.id)
+    used=min(available,subtotal-discount) if data.use_wallet and cfg.wallet_enabled else 0
+    return {'subtotal':subtotal,'discount':discount,'total_amount':subtotal-discount,'coupon':coupon.code if coupon else '', 'wallet_balance':available,'wallet_used':used,'payable':subtotal-discount-used,'wallet_mode':wallet_mode()}
 
 def payment_response(order):
-    return {'status':'success', 'order_id':order.id, 'total_amount':order.total_amount, 'payment_mode':order.payment_mode, 'payment_url':f'/demo-payment.html?authority={order.authority_code}'}
+    return {'status':'success', 'order_id':order.id, 'total_amount':order.total_amount, 'payment_mode':order.payment_mode, 'payment_url':f'/payment-result.html?authority={order.authority_code}' if order.status=='success' else f'/demo-payment.html?authority={order.authority_code}'}
 
 @router.post('/payment/request', status_code=201)
 async def request_payment(data: CheckoutRequest, db: DB, idempotency_key: Annotated[str, Header(pattern=r'^[a-f0-9-]{36}$')], context: Customer = Depends(customer)):
     if not context.profile.registered:
         raise HTTPException(409, 'ابتدا اطلاعات حساب کاربری را یک بار تکمیل کنید.')
-    if settings.PAYMENT_MODE!='demo':
-        raise HTTPException(503, 'پرداخت آنلاین هنوز فعال نشده است.')
     fingerprint = hashlib.sha256((str(context.user.id)+':'+data.model_dump_json()).encode()).hexdigest()
     # Serializes coupon reservation + order creation across workers/processes.
     await db.execute(text('BEGIN IMMEDIATE'))
+    await expire_pending(db)
     existing = await db.scalar(select(Order).where(Order.idempotency_key==idempotency_key))
     if existing:
         if existing.request_fingerprint!=fingerprint or existing.user_id!=context.user.id:
             raise HTTPException(409, 'این شناسه برای سفارش دیگری استفاده شده است.')
         return payment_response(existing)
     products, quantities, subtotal, discount, coupon = await quote(data, db, context.user.id)
+    cfg=await operations(db)
+    used=min(await balance(db,context.user.id),subtotal-discount) if data.use_wallet and cfg.wallet_enabled else 0
+    payable=subtotal-discount-used
+    if payable and settings.PAYMENT_MODE!='demo':
+        raise HTTPException(503,'درگاه آنلاین هنوز فعال نشده؛ پرداخت کامل با کیف پول امکان‌پذیر است.')
+    credentials=[]
+    for pid,product in products.items():
+        supplied=[x for x in data.credentials if x.product_id==pid]
+        if product.require_credentials and len(supplied)!=quantities[pid]:
+            raise HTTPException(400,'برای هر واحد محصول، اطلاعات اکانت را وارد کنید.')
+        if product.require_credentials:
+            credentials.extend(x.model_dump() for x in supplied)
+    if any(x.product_id not in products or not products[x.product_id].require_credentials for x in data.credentials):
+        raise HTTPException(400,'اطلاعات ورود مربوط به محصول مجاز در سبد نیست.')
     order = Order(user_id=context.user.id, total_amount=subtotal-discount, full_name=context.user.full_name, mobile=context.user.mobile, telegram_id=context.user.telegram_id,
                   authority_code=str(uuid4()), idempotency_key=idempotency_key, request_fingerprint=fingerprint)
     db.add(order)
     await db.flush()
+    if used:
+        await entry(db,context.user.id,-used,'purchase','purchase:'+order.id,'پرداخت سفارش از کیف پول')
+    db.add(OrderExtra(order_id=order.id,wallet_used=used,payable=payable,mode=wallet_mode(),credentials=seal(json.dumps(credentials,ensure_ascii=False)) if credentials else ''))
+    if payable==0:
+        order.status='success';order.payment_mode='demo' if wallet_mode()=='demo' else 'wallet';order.ref_id=('DEMO-' if wallet_mode()=='demo' else 'WALLET-')+secrets.token_hex(6)
     for pid, qty in quantities.items():
         db.add(OrderItem(order_id=order.id, product_id=pid, title=products[pid].title, quantity=qty, unit_price=products[pid].price))
-    db.add(OrderDetails(order_id=order.id, subtotal=subtotal, discount_amount=discount, coupon_code=coupon.code if coupon else ''))
+    db.add(OrderDetails(order_id=order.id, subtotal=subtotal, discount_amount=discount, coupon_code=coupon.code if coupon else '',fulfillment=('demo_complete' if wallet_mode()=='demo' else 'processing') if payable==0 else 'awaiting_payment'))
     if coupon:
-        db.add(CouponUse(order_id=order.id, coupon_id=coupon.id, user_id=context.user.id, expires_at=now()+1200))
+        db.add(CouponUse(order_id=order.id, coupon_id=coupon.id, user_id=context.user.id, expires_at=now()+1200,status='redeemed' if payable==0 else 'reserved'))
     await db.commit()
     return payment_response(order)
 
@@ -112,7 +138,8 @@ async def payment_session(authority: str, db: DB, context: Customer = Depends(cu
     order = await db.scalar(select(Order).where(Order.authority_code==authority, Order.user_id==context.user.id))
     if not order:
         raise HTTPException(404, 'سفارش پیدا نشد.')
-    return {'order_id':order.id, 'total_amount':order.total_amount, 'status':order.status, 'ref_id':order.ref_id, 'payment_mode':order.payment_mode}
+    extra=await db.get(OrderExtra,order.id)
+    return {'order_id':order.id,'total_amount':extra.payable if extra else order.total_amount,'order_total':order.total_amount,'wallet_used':extra.wallet_used if extra else 0,'status':order.status,'ref_id':order.ref_id,'payment_mode':order.payment_mode}
 
 @router.post('/payment/verify')
 async def verify_payment(Authority: str, Status: Literal['OK','NOK'], db: DB, context: Customer = Depends(customer)):
@@ -129,6 +156,7 @@ async def verify_payment(Authority: str, Status: Literal['OK','NOK'], db: DB, co
         use = await db.get(CouponUse, order.id)
         if use:
             use.status = 'redeemed' if order.status=='success' else 'released'
+        if order.status=='failed': await release(db,order)
         details = await db.get(OrderDetails, order.id)
         if details:
             details.fulfillment = 'demo_complete' if order.status=='success' else 'canceled'
@@ -146,6 +174,8 @@ async def order_data(order, db, admin=False):
               'payment_mode':order.payment_mode, 'fulfillment':details.fulfillment if details else 'legacy', 'customer_note':details.customer_note if details else '',
               'discount_amount':details.discount_amount if details else 0, 'coupon':details.coupon_code if details else '',
               'items':[{'title':i.title, 'quantity':i.quantity, 'unit_price':i.unit_price, 'product_id':i.product_id} for i in items]}
+    extra=await db.get(OrderExtra,order.id)
+    result.update({'wallet_used':extra.wallet_used if extra else 0,'payable':extra.payable if extra else order.total_amount,'refunded':bool(extra and extra.refunded),'has_credentials':bool(extra and extra.credentials)})
     if admin:
         result.update({'user_id':order.user_id,'full_name':order.full_name,'mobile':order.mobile,'telegram_id':order.telegram_id,'internal_note':details.internal_note if details else ''})
     return result

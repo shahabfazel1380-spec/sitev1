@@ -5,7 +5,7 @@ export const money = value => `${fa.format(value)} تومان`;
 export const digits = value => value.replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c)));
 export const symbols = {gpt:'✳',gemini:'✦',spotify:'≋',nord:'◭',trading:'Tᵛ',adobe:'Λ'};
 export const date = value => new Intl.DateTimeFormat('fa-IR',{dateStyle:'medium',timeStyle:'short'}).format(new Date(typeof value==='number'?value*1000:value));
-export const statusLabel = value => ({pending:'در انتظار پرداخت',success:'پرداخت موفق',failed:'ناموفق',open:'منتظر پاسخ پشتیبانی',answered:'پاسخ داده شده',closed:'بسته شده',processing:'در حال انجام',delivered:'تحویل شده',awaiting_payment:'در انتظار پرداخت',canceled:'لغو شده',demo_complete:'تکمیل آزمایشی',legacy:'سفارش قبلی'}[value]||value);
+export const statusLabel = value => ({pending:'در انتظار پرداخت',success:'پرداخت موفق',failed:'ناموفق',open:'منتظر پاسخ پشتیبانی',answered:'پاسخ داده شده',closed:'بسته شده',processing:'در حال انجام',delivered:'تحویل شده',awaiting_payment:'در انتظار پرداخت',canceled:'لغو شده',demo_complete:'تکمیل آزمایشی',refunded:'بازپرداخت به کیف پول',legacy:'سفارش قبلی'}[value]||value);
 export const Store={user:null,config:{},products:[],cart:{},ready:null};
 let afterLogin=null, otpMobile='', resendAt=0, quoteResult=null, coupon='', checkoutKey=null, quoteGeneration=0, chatId=null, chatCursor=0, chatLoading=false;
 
@@ -70,30 +70,36 @@ export async function busy(form,action){const button=$('button[type="submit"],bu
 async function checkout(){
   if(!items().length)return toast('سبد خریدت خالی است.','error');
   $('#checkout-dialog .checkout-contact').innerHTML=`<strong>${esc(Store.user.full_name)}</strong><span dir="ltr">${esc(Store.user.mobile)}</span><a href="/account.html#profile">ویرایش اطلاعات حساب</a>`;
+  $('#checkout-credentials').innerHTML=credentialFields();$('#wallet-choice').hidden=!Store.config.wallet_enabled;
   $('#coupon-code').value=coupon;$('#checkout-error').textContent='';openDialog('checkout-dialog');await refreshQuote();
 }
 async function refreshQuote(){
   const generation=++quoteGeneration;const button=$('#submit-order');button.disabled=true;quoteResult=null;
-  try{const quote=await api('/api/checkout/quote',{method:'POST',body:JSON.stringify({items:items(),coupon})});if(generation!==quoteGeneration)return;quoteResult=quote;$('#quote-summary').innerHTML=`<div class="summary-row"><span>جمع سفارش</span><b>${money(quote.subtotal)}</b></div><div class="summary-row"><span>کد تخفیف ${esc(quote.coupon)}</span><b>${money(quote.discount)}</b></div><div class="summary-row total"><span>مبلغ نهایی</span><strong>${money(quote.total_amount)}</strong></div>`;$('#checkout-error').textContent='';button.disabled=Store.config.payment_mode==='disabled';button.textContent=Store.config.payment_mode==='disabled'?'پرداخت هنوز فعال نشده':'ادامه به پرداخت آزمایشی ←';}
+  try{const quote=await api('/api/checkout/quote',{method:'POST',body:JSON.stringify({items:items(),coupon,use_wallet:$('#use-wallet').checked})});if(generation!==quoteGeneration)return;quoteResult=quote;$('#quote-summary').innerHTML=`<div class="summary-row"><span>جمع سفارش</span><b>${money(quote.subtotal)}</b></div><div class="summary-row"><span>کد تخفیف ${esc(quote.coupon)}</span><b>${money(quote.discount)}</b></div><div class="summary-row"><span>از کیف پول ${quote.wallet_mode==='demo'?'آزمایشی':''}</span><b>${money(quote.wallet_used)}</b></div><div class="summary-row total"><span>مانده قابل پرداخت</span><strong>${money(quote.payable)}</strong></div><p class="form-note">موجودی کیف پول: ${money(quote.wallet_balance)}</p>`;$('#checkout-error').textContent='';button.disabled=quote.payable>0&&Store.config.payment_mode==='disabled';button.textContent=quote.payable===0?'پرداخت کامل با کیف پول':Store.config.payment_mode==='disabled'?'درگاه هنوز فعال نشده':'ادامه به پرداخت آزمایشی ←';}
   catch(error){if(generation!==quoteGeneration)return;$('#checkout-error').textContent=errorText(error);if(error.status===401){Store.user=null;$('#checkout-dialog').close();requireLogin(checkout);}}
 }
 async function submitOrder(){
   if(!quoteResult||!items().length)return;
+  if(!$('#checkout-credentials').reportValidity())return;
   const button=$('#submit-order');button.disabled=true;button.textContent='در حال ثبت سفارش…';checkoutKey ||= crypto.randomUUID();
-  try{const result=await api('/api/payment/request',{method:'POST',headers:{'Idempotency-Key':checkoutKey},body:JSON.stringify({items:items(),coupon})});const destination=new URL(result.payment_url,location.origin);if(destination.origin!==location.origin)throw new Error('نشانی پرداخت نامعتبر است.');try{sessionStorage.setItem('premium-pending-cart',JSON.stringify({authority:destination.searchParams.get('authority'),items:items()}));}catch{}location.assign(destination.href);}
+  try{const result=await api('/api/payment/request',{method:'POST',headers:{'Idempotency-Key':checkoutKey},body:JSON.stringify({items:items(),coupon,use_wallet:$('#use-wallet').checked,credentials:readCredentials()})});const destination=new URL(result.payment_url,location.origin);if(destination.origin!==location.origin)throw new Error('نشانی پرداخت نامعتبر است.');try{sessionStorage.setItem('premium-pending-cart',JSON.stringify({authority:destination.searchParams.get('authority'),items:items()}));}catch{}location.assign(destination.href);}
   catch(error){$('#checkout-error').textContent=errorText(error);if(error.status===401){Store.user=null;$('#checkout-dialog').close();requireLogin(checkout);}}
   finally{button.disabled=false;button.textContent='ادامه به پرداخت آزمایشی ←';}
 }
 
 export function messageHTML(message){return `<article class="message ${message.sender==='staff'?'staff-message':'customer-message'}"><small>${message.sender==='staff'?'پشتیبانی':'شما'} · ${date(message.created_at)}</small><p>${esc(message.body)}</p></article>`;}
 async function startChat(){
+  const presence=await api('/api/support/presence');
+  if(!presence.enabled){openDialog('chat-dialog');$('#chat-presence').textContent='چت غیرفعال است';$('#chat-messages').innerHTML=`<div class="empty-state"><p>${esc(presence.message)}</p><a class="button primary" href="/account.html#tickets">ورود و ثبت تیکت</a></div>`;$('#chat-form').hidden=true;chatId=null;return;}
+  if(!Store.user?.registered)return requireLogin(startChat);
+  $('#chat-form').hidden=false;
   openDialog('chat-dialog');$('#chat-messages').innerHTML='';chatId=null;chatCursor=0;
   try{const list=await api('/api/account/conversations?kind=chat');const active=list.items.find(c=>c.status!=='closed');chatId=active?.id||null;await pollChat();if(!chatId)$('#chat-messages').innerHTML='<div class="empty-state"><h3>چطور می‌توانیم کمکت کنیم؟</h3><p>پیامت را بنویس؛ سابقه گفت‌وگو در حساب تو می‌ماند.</p></div>';}
   catch(error){toast(errorText(error),'error');}
 }
 async function pollChat(){
   if(chatLoading||!$('#chat-dialog').open||document.hidden)return;chatLoading=true;
-  try{const presence=await api('/api/support/presence');$('#chat-presence').textContent=presence.online?'کارشناس آنلاین است':'کارشناس آنلاین نیست؛ پیامت ذخیره می‌شود.';if(chatId){const data=await api(`/api/account/conversations/${chatId}?after=${chatCursor}`);if(data.messages.length){if(!chatCursor)$('#chat-messages').innerHTML='';$('#chat-messages').insertAdjacentHTML('beforeend',data.messages.map(messageHTML).join(''));chatCursor=data.messages.at(-1).id;$('#chat-messages').scrollTop=$('#chat-messages').scrollHeight;}$('#chat-send').disabled=data.conversation.status==='closed';if(data.conversation.status==='closed')$('#chat-presence').textContent='گفت‌وگو بسته شده است؛ برای شروع مجدد پنجره را باز کن.';}}
+  try{const presence=await api('/api/support/presence');if(!presence.enabled){$('#chat-form').hidden=true;$('#chat-presence').textContent=presence.message;return;}$('#chat-form').hidden=false;$('#chat-presence').textContent=(presence.online?'کارشناس آنلاین است':'کارشناس آنلاین نیست؛ پیامت ذخیره می‌شود.')+' · '+(Store.config.support_hours||'');if(chatId){const data=await api(`/api/account/conversations/${chatId}?after=${chatCursor}`);if(data.messages.length){if(!chatCursor)$('#chat-messages').innerHTML='';$('#chat-messages').insertAdjacentHTML('beforeend',data.messages.map(messageHTML).join(''));chatCursor=data.messages.at(-1).id;$('#chat-messages').scrollTop=$('#chat-messages').scrollHeight;}$('#chat-send').disabled=data.conversation.status==='closed';if(data.conversation.status==='closed')$('#chat-presence').textContent='گفت‌وگو بسته شده است؛ برای شروع مجدد پنجره را باز کن.';}}
   catch(error){$('#chat-presence').textContent=errorText(error);}finally{chatLoading=false;}
 }
 
@@ -104,7 +110,7 @@ function shell(){
   document.body.insertAdjacentHTML('beforeend',`
   <dialog id="cart-dialog" class="cart-drawer" aria-labelledby="cart-title"><div class="dialog-header"><h2 id="cart-title">سبد خرید</h2><button class="icon-button" data-close="cart-dialog" aria-label="بستن سبد خرید">×</button></div><div id="cart-items" class="cart-items"></div><div id="cart-footer" class="cart-footer"></div></dialog>
   <dialog id="login-dialog" class="modal" aria-labelledby="login-title"><div class="dialog-header"><h2 id="login-title">ورود / ثبت‌نام</h2><button class="icon-button" data-close="login-dialog" aria-label="بستن ورود">×</button></div><div id="login-body"></div></dialog>
-  <dialog id="checkout-dialog" class="modal" aria-labelledby="checkout-title"><div class="dialog-header"><h2 id="checkout-title">مرور و تکمیل سفارش</h2><button class="icon-button" data-close="checkout-dialog" aria-label="بستن تکمیل سفارش">×</button></div><div class="checkout-contact"></div><div class="coupon-entry"><label for="coupon-code">کد تخفیف داری؟</label><div><input id="coupon-code" dir="ltr" maxlength="40" placeholder="کد تخفیف"><button class="button secondary" id="apply-coupon">اعمال کد</button></div><button class="text-button" id="clear-coupon">حذف کد تخفیف</button></div><div id="quote-summary"></div><p class="demo-warning">پرداخت این نسخه آزمایشی است و وجهی دریافت نمی‌شود.</p><p id="checkout-error" class="field-error" role="alert"></p><button class="button primary full-width" id="submit-order" disabled>در حال محاسبه…</button></dialog>
+  <dialog id="checkout-dialog" class="modal" aria-labelledby="checkout-title"><div class="dialog-header"><h2 id="checkout-title">مرور و تکمیل سفارش</h2><button class="icon-button" data-close="checkout-dialog" aria-label="بستن تکمیل سفارش">×</button></div><div class="checkout-contact"></div><div class="coupon-entry"><label for="coupon-code">کد تخفیف داری؟</label><div><input id="coupon-code" dir="ltr" maxlength="40" placeholder="کد تخفیف"><button class="button secondary" id="apply-coupon">اعمال کد</button></div><button class="text-button" id="clear-coupon">حذف کد تخفیف</button></div><form id="checkout-credentials" class="portal-form" autocomplete="off"></form><label id="wallet-choice" class="checkbox-row"><input type="checkbox" id="use-wallet">استفاده از موجودی کیف پول</label><div id="quote-summary"></div><p class="demo-warning">پرداخت این نسخه آزمایشی است و وجهی دریافت نمی‌شود.</p><p id="checkout-error" class="field-error" role="alert"></p><button class="button primary full-width" id="submit-order" disabled>در حال محاسبه…</button></dialog>
   <button class="chat-launcher support-trigger" aria-label="گفت‌وگوی آنلاین با پشتیبانی">◌ <span>پشتیبانی آنلاین</span></button>
   <dialog id="chat-dialog" class="chat-panel" aria-labelledby="chat-title"><div class="dialog-header"><div><h2 id="chat-title">گفت‌وگوی آنلاین</h2><small id="chat-presence">در حال بررسی وضعیت…</small></div><button class="icon-button" data-close="chat-dialog" aria-label="بستن گفت‌وگو">×</button></div><div id="chat-messages" class="messages" aria-live="polite"></div><form id="chat-form"><label class="sr-only" for="chat-body">پیام به پشتیبانی</label><textarea id="chat-body" maxlength="5000" required placeholder="پیامت را بنویس…"></textarea><p class="field-error" role="alert"></p><button id="chat-send" class="button primary" type="submit">ارسال پیام ←</button></form><a class="text-button" href="/account.html#tickets">برای پیگیری جداگانه، تیکت ثبت کن ↖</a></dialog>`);
   document.addEventListener('click',event=>{const target=event.target.closest('button,a');if(!target)return;
@@ -112,13 +118,17 @@ function shell(){
     if(target.id==='open-cart')openDialog('cart-dialog');
     if(target.id==='account-button')requireLogin(()=>location.assign('/account.html'));
     if(target.id==='checkout-button'){$('#cart-dialog').close();requireLogin(checkout);}
-    if(target.matches('.support-trigger'))requireLogin(startChat);
+    if(target.matches('.support-trigger'))startChat().catch(e=>toast(errorText(e),'error'));
     if(target.dataset.qty){const id=target.dataset.qty;Store.cart[id]=Math.max(0,Math.min(10,(Store.cart[id]||0)+Number(target.dataset.delta)));if(!Store.cart[id])delete Store.cart[id];saveCart();($('#cart-items').querySelector(`[data-qty="${id}"]`)||$('#cart-dialog .icon-button')).focus();}
     if(target.dataset.remove){delete Store.cart[target.dataset.remove];saveCart();}
   });
   document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();}}));
   $('#apply-coupon').onclick=()=>{coupon=$('#coupon-code').value.trim().toUpperCase();checkoutKey=null;refreshQuote();};
   $('#clear-coupon').onclick=()=>{coupon='';checkoutKey=null;$('#coupon-code').value='';refreshQuote();};
+  $('#use-wallet').onchange=()=>{checkoutKey=null;refreshQuote();};
+  $('#checkout-credentials').onsubmit=e=>{e.preventDefault();submitOrder();};
+  $('#checkout-credentials').oninput=()=>{checkoutKey=null;};
+  $('#checkout-dialog').addEventListener('close',()=>{$('#checkout-credentials').innerHTML='';});
   $('#submit-order').onclick=submitOrder;
   $('#chat-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget;await busy(form,async()=>{const body=$('#chat-body').value.trim();if(!body)return;if(chatId)await api(`/api/account/conversations/${chatId}/messages`,{method:'POST',body:JSON.stringify({body})});else{const created=await api('/api/account/conversations',{method:'POST',body:JSON.stringify({kind:'chat',subject:'گفت‌وگو با پشتیبانی',body})});chatId=created.id;}$('#chat-body').value='';await pollChat();});});
   setInterval(()=>{const button=$('#resend-code');if(button){const remaining=Math.max(0,Math.ceil((resendAt-Date.now())/1000));button.disabled=remaining>0;button.textContent=remaining?`ارسال مجدد تا ${fa.format(remaining)} ثانیه دیگر`:'ارسال دوباره کد';}},1000);
@@ -133,8 +143,17 @@ Store.ready=(async()=>{
   Store.config=catalog;Store.products=catalog.products;
   Store.cart=Object.fromEntries(Object.entries(Store.cart).filter(([id])=>Store.products.some(p=>p.id===Number(id)&&p.available)));
   renderCart();
-  if($('#social-links'))$('#social-links').innerHTML=[['telegram_url','کانال تلگرام ↗'],['instagram_url','اینستاگرام ↗']].filter(([key])=>Store.config[key]).map(([key,label])=>`<a href="${esc(Store.config[key])}" target="_blank" rel="noopener noreferrer">${label}</a>`).join('');
+  if(Store.config.store_name)document.title=document.title.replace('پریمیوم استور',Store.config.store_name);
+  if(Store.config.store_name)document.querySelectorAll('.brand > span:last-child').forEach(node=>{const text=[...node.childNodes].find(n=>n.nodeType===Node.TEXT_NODE&&n.textContent.trim());if(text)text.textContent=Store.config.store_name;});
+  if($('#social-links'))$('#social-links').innerHTML=[['telegram_url','کانال تلگرام ↗'],['instagram_url','اینستاگرام ↗'],['support_url','پشتیبانی تلگرام ↗'],['bot_url','ربات تلگرام ↗']].filter(([key])=>Store.config[key]).map(([key,label])=>`<a href="${esc(Store.config[key])}" target="_blank" rel="noopener noreferrer">${label}</a>`).join('');
   if($('#store-notice')&&Store.config.store_notice){$('#store-notice').textContent=Store.config.store_notice;$('#store-notice').hidden=false;}
   return Store;
 })();
 Store.ready.catch(error=>toast(errorText(error),'error'));
+
+function credentialFields(){
+ const fields=items().filter(i=>Store.products.find(p=>p.id===i.product_id)?.require_credentials);
+ if(!fields.length)return '';
+ return `<section class="credential-section"><h3>اطلاعات اکانت برای فعال‌سازی</h3><p class="form-note">${esc(Store.config.credential_help)}</p>${fields.map(i=>Array.from({length:i.quantity},(_,index)=>`<fieldset class="credential-item" data-credential="${i.product_id}"><legend>${esc(Store.products.find(p=>p.id===i.product_id).title)} · اکانت ${fa.format(index+1)}</legend><label>ایمیل / نام کاربری<input data-username required maxlength="254" dir="ltr" autocomplete="off"></label><label>رمز اکانت<input data-password required type="password" maxlength="256" dir="ltr" autocomplete="new-password"></label></fieldset>`).join('')).join('')}<small>فقط برای فعال‌سازی این سفارش؛ در سبد یا حافظه محلی مرورگر ذخیره نمی‌شود.</small></section>`;
+}
+function readCredentials(){return [...document.querySelectorAll('[data-credential]')].map(el=>({product_id:Number(el.dataset.credential),username:$('[data-username]',el).value,password:$('[data-password]',el).value}));}

@@ -20,7 +20,10 @@ PERMISSIONS = {
  'chat.read':'چت: مشاهده', 'chat.reply':'چت: پاسخ', 'chat.manage':'چت: وضعیت و ارجاع',
  'discounts.read':'تخفیف‌ها: مشاهده', 'discounts.write':'تخفیف‌ها: ایجاد و ویرایش',
  'settings.read':'تنظیمات: مشاهده', 'settings.write':'تنظیمات: ویرایش',
- 'audit.read':'گزارش فعالیت: مشاهده', 'sync.read':'همگام‌سازی: مشاهده', 'sync.retry':'همگام‌سازی: اجرای مجدد',
+ 'wallet.read':'کیف پول: مشاهده', 'wallet.adjust':'کیف پول: اصلاح و جایزه', 'wallet.refund':'کیف پول: بازپرداخت سفارش',
+ 'messages.read':'پیام‌ها: تاریخچه', 'messages.send':'پیام‌ها: ارسال',
+ 'activations.read':'فعال‌سازی: مشاهده', 'activations.write':'فعال‌سازی: ثبت و ویرایش', 'activations.secrets':'فعال‌سازی: مشاهده رمز و شماره کارت', 'orders.secrets':'سفارش: مشاهده اطلاعات ورود',
+ 'audit.read':'گزارش فعالیت: مشاهده',
 }
 _secret = None
 

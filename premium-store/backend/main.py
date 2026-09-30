@@ -7,10 +7,12 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, update, text
 from starlette.exceptions import HTTPException
 from . import admin, auth, commerce, settings, support
-from .bridge import worker
+from .notifications import worker
+from . import extensions
+from .vault import cipher
 from .db import Base, Session, engine
 from .models import (CouponUse, CustomerSession, OTP, Product, RateLimit, SchemaVersion,
                      Setting, StaffSession, now)
@@ -20,7 +22,13 @@ async def migrate():
     # v2 is additive: preserve all v1 user/order tables and introduce new tables.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        columns=(await conn.execute(text('PRAGMA table_info(store_products)'))).all()
+        if 'require_credentials' not in {c[1] for c in columns}:
+            await conn.execute(text('ALTER TABLE store_products ADD COLUMN require_credentials BOOLEAN NOT NULL DEFAULT 0'))
     async with Session() as db:
+        if not await db.get(SchemaVersion,3):
+            db.add(SchemaVersion(version=3))
+            await db.commit()
         if not await db.get(SchemaVersion,2):
             if not await db.scalar(select(Product.id).limit(1)):
                 for value in json.loads((settings.ROOT/'catalog.json').read_text(encoding='utf-8')):
@@ -34,6 +42,9 @@ async def housekeeping():
     while True:
         try:
             async with Session() as db:
+                await db.execute(text('BEGIN IMMEDIATE'))
+                from .wallet import expire_pending
+                await expire_pending(db)
                 stamp=now()
                 for model in [CustomerSession,StaffSession,RateLimit]:
                     await db.execute(delete(model).where(model.expires_at<stamp))
@@ -48,6 +59,7 @@ async def housekeeping():
 async def lifespan(app):
     settings.validate_environment()
     secret()
+    cipher()
     await migrate()
     tasks=[asyncio.create_task(worker()),asyncio.create_task(housekeeping())]
     yield
@@ -58,7 +70,7 @@ async def lifespan(app):
             await task
     await engine.dispose()
 
-app=FastAPI(title='Premium Store API',version='2.0.0',lifespan=lifespan,
+app=FastAPI(title='Premium Store API',version='3.0.0',lifespan=lifespan,
     docs_url='/api/docs' if settings.ENV!='production' else None,redoc_url=None,
     openapi_url='/api/openapi.json' if settings.ENV!='production' else None)
 
@@ -73,6 +85,8 @@ async def security_headers(request: Request, call_next):
         'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https: data:; media-src 'self' https:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"})
     if request.url.path.startswith('/api/'):
         response.headers['Cache-Control']='no-store'
+    else:
+        response.headers['Cache-Control']='no-cache'
     if settings.ENV=='production':
         response.headers['Strict-Transport-Security']='max-age=31536000'
     return response
@@ -124,8 +138,9 @@ async def server_error(request,exc):
 
 @app.get('/api/health')
 async def health():
-    return {'status':'ok','version':'2.0.0'}
+    return {'status':'ok','version':'3.0.0'}
 
+app.include_router(extensions.router)
 app.include_router(auth.router)
 app.include_router(commerce.router)
 app.include_router(support.router)

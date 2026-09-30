@@ -40,7 +40,7 @@
     }
     const success = order.status === 'success';
     const pending = order.status === 'pending';
-    container.innerHTML = `<span class="payment-icon">${success ? '✓' : pending ? '◷' : '×'}</span><h1>${success ? 'پرداخت آزمایشی موفق بود' : pending ? 'سفارش در انتظار پرداخت است' : 'پرداخت تکمیل نشد'}</h1><p>${success ? 'سفارش آزمایشی ثبت شد. این رسید به معنی پرداخت یا خرید واقعی نیست.' : pending ? 'هنوز نتیجه نهایی برای این سفارش ثبت نشده است.' : 'پرداخت لغو شده یا زمان آن به پایان رسیده است. سبد خریدت برای تلاش دوباره حفظ شده.'}</p><div class="payment-amount">${money(order.total_amount)}</div>`;
+    container.innerHTML = `<span class="payment-icon">${success ? '✓' : pending ? '◷' : '×'}</span><h1>${success ? (order.payment_mode==='demo'?'پرداخت آزمایشی موفق بود':'پرداخت با کیف پول انجام شد') : pending ? 'سفارش در انتظار پرداخت است' : 'پرداخت تکمیل نشد'}</h1><p>${success ? (order.payment_mode==='demo'?'سفارش آزمایشی ثبت شد. این رسید به معنی پرداخت یا خرید واقعی نیست.':'سفارش شما با موجودی کیف پول پرداخت شد.') : pending ? 'هنوز نتیجه نهایی برای این سفارش ثبت نشده است.' : 'پرداخت لغو شده یا زمان آن به پایان رسیده است. سبد خریدت برای تلاش دوباره حفظ شده.'}</p><div class="payment-amount">${money(order.order_total??order.total_amount)}</div><p>سهم کیف پول: ${money(order.wallet_used||0)}</p>`;
     if (success) {
       const ref = document.createElement('div'); ref.className = 'payment-ref'; ref.textContent = order.ref_id; container.append(ref);
       try {

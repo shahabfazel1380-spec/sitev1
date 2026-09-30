@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, text
 from .db import DB
+from .preferences import operations
 from .models import Conversation, Message, Order, Staff, now
 from .schemas import ConversationInput, MessageInput
 from .security import Customer, customer, rate_limit
@@ -16,7 +17,8 @@ def message_data(m):
 @router.get('/support/presence')
 async def presence(db: DB):
     staff = (await db.scalars(select(Staff).where(Staff.active==True, Staff.deleted==False, Staff.last_seen>now()-65))).all()
-    return {'online':any(s.owner or 'chat.reply' in s.permissions for s in staff)}
+    config=await operations(db)
+    return {'enabled':config.chat_enabled,'message':config.chat_offline_message,'online':config.chat_enabled and any(s.owner or 'chat.reply' in s.permissions for s in staff)}
 
 @router.get('/account/conversations')
 async def conversations(db: DB, kind: str = Query('ticket', pattern='^(ticket|chat)$'), page: int = Query(1, ge=1), context: Customer = Depends(customer)):
@@ -32,6 +34,8 @@ async def create_conversation(data: ConversationInput, db: DB, context: Customer
         if not order or order.user_id!=context.user.id:
             raise HTTPException(404, 'سفارش متعلق به این حساب نیست.')
     if data.kind=='chat':
+        config=await operations(db)
+        if not config.chat_enabled: raise HTTPException(409,config.chat_offline_message)
         existing = await db.scalar(select(Conversation).where(Conversation.user_id==context.user.id, Conversation.kind=='chat', Conversation.status!='closed'))
         if existing:
             db.add(Message(conversation_id=existing.id, sender='customer', body=data.body))
@@ -60,6 +64,9 @@ async def post_message(conversation_id: str, data: MessageInput, db: DB, context
     conversation = await db.get(Conversation, conversation_id)
     if not conversation or conversation.user_id!=context.user.id:
         raise HTTPException(404, 'گفت‌وگو پیدا نشد.')
+    if conversation.kind=='chat':
+        config=await operations(db)
+        if not config.chat_enabled: raise HTTPException(409,config.chat_offline_message)
     if conversation.status=='closed':
         raise HTTPException(409, 'این گفت‌وگو بسته شده است؛ تیکت یا گفت‌وگوی تازه بسازید.')
     message = Message(conversation_id=conversation_id, sender='customer', body=data.body)

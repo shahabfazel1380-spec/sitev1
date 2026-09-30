@@ -13,7 +13,7 @@ from . import settings
 from .commerce import order_data, product_data, public_config
 from .db import DB
 from .models import (Audit, Conversation, Coupon, CustomerSession, Message, Order, OrderDetails,
-                     Product, Profile, Setting, Staff, StaffSession, SyncJob, User, now)
+                     Product, Profile, Setting, Staff, StaffSession, User, now)
 from .schemas import CouponInput, MessageInput, ProductInput, Schema, StaffInput
 from .security import Administrator, PERMISSIONS, administrator, allowed, owner, password_hash, rate_limit, require
 from .support import conversation_data, message_data
@@ -48,7 +48,6 @@ async def create_product(data: ProductInput, db: DB, context: Administrator = De
     product = Product(**data.model_dump(exclude={'revision'}))
     db.add(product)
     await db.flush()
-    db.add(SyncJob(product_id=product.id,revision=product.revision))
     audit(db,context,'product.create',product.id)
     await db.commit()
     return product_data(product,True)
@@ -67,7 +66,6 @@ async def edit_product(product_id: int, data: ProductInput, db: DB, context: Adm
         setattr(product,key,value)
     product.revision += 1
     product.updated_at=now()
-    db.add(SyncJob(product_id=product.id,revision=product.revision))
     audit(db,context,'product.update',product.id)
     await db.commit()
     return product_data(product,True)
@@ -87,7 +85,6 @@ async def archive_product(product_id: int, data: ArchiveInput, db: DB, context: 
     product.archived=data.archived
     product.revision += 1
     product.updated_at=now()
-    db.add(SyncJob(product_id=product.id,revision=product.revision))
     audit(db,context,'product.archive' if data.archived else 'product.restore',product.id)
     await db.commit()
     return {'ok':True}
@@ -144,11 +141,22 @@ class OrderUpdate(Schema):
 
 @router.put('/orders/{order_id}')
 async def update_order(order_id: str, data: OrderUpdate, db: DB, context: Administrator = Depends(require('orders.update'))):
+    await db.execute(text('BEGIN IMMEDIATE'))
     order=await db.get(Order,order_id)
     if not order:
         raise HTTPException(404,'سفارش پیدا نشد.')
+    from .models import OrderExtra
+    extra=await db.get(OrderExtra,order_id)
+    if extra and extra.refunded: raise HTTPException(409,'سفارش بازپرداخت شده است و وضعیت انجام آن قابل تغییر نیست.')
     if data.fulfillment in {'processing','delivered'} and (order.status!='success' or order.payment_mode=='demo'):
         raise HTTPException(409,'سفارش آزمایشی یا پرداخت‌نشده قابل تحویل نیست.')
+    if data.fulfillment=='canceled' and order.status=='pending':
+        from .wallet import release
+        from .models import CouponUse
+        order.status='failed'
+        await release(db,order)
+        use=await db.get(CouponUse,order_id)
+        if use: use.status='released'
     if data.fulfillment=='demo_complete' and not (order.payment_mode=='demo' and order.status=='success'):
         raise HTTPException(409,'وضعیت آزمایشی با این سفارش سازگار نیست.')
     details=await db.get(OrderDetails,order_id)
@@ -251,6 +259,11 @@ async def admin_message(conversation_id: str, data: MessageInput, db: DB, contex
     db.add(message)
     conversation.status='answered'
     conversation.updated_at=now()
+    await db.flush()
+    config=await operations(db)
+    if conversation.kind=='ticket' and config.ticket_sms_enabled:
+        from .notifications import queue
+        await queue(db,conversation.user_id,'sms',config.ticket_sms_text,'ticket:'+str(message.id))
     audit(db,context,'support.reply',conversation_id)
     await db.commit()
     return message_data(message)
@@ -339,7 +352,9 @@ async def delete_staff(staff_id: int, db: DB, context: Administrator = Depends(o
     await db.commit()
     return {'ok':True}
 
-class SettingsInput(Schema):
+from .preferences import OperationsInput, operations, save_operations
+
+class SettingsInput(OperationsInput):
     telegram_url: str = Field(default='',max_length=2048)
     instagram_url: str = Field(default='',max_length=2048)
     support_url: str = Field(default='',max_length=2048)
@@ -360,11 +375,12 @@ class SettingsInput(Schema):
 
 @router.get('/settings')
 async def admin_settings(db: DB, context: Administrator = Depends(require('settings.read'))):
-    return await public_config(db)
+    return {**await public_config(db), **(await operations(db)).model_dump(), 'technical':{'sms_mode':settings.SMS_MODE,'payment_mode':settings.PAYMENT_MODE,'sms_ready':bool(os.getenv('KAVENEGAR_API_KEY')),'telegram_ready':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'environment':settings.ENV}}
 
 @router.put('/settings')
 async def update_settings(data: SettingsInput, db: DB, context: Administrator = Depends(require('settings.write'))):
-    for key,value in data.model_dump().items():
+    await save_operations(db,OperationsInput(**data.model_dump(include=set(OperationsInput.model_fields))))
+    for key,value in data.model_dump(exclude=set(OperationsInput.model_fields)).items():
         row=await db.get(Setting,key)
         if row:
             row.value=value
@@ -378,17 +394,3 @@ async def update_settings(data: SettingsInput, db: DB, context: Administrator = 
 async def audit_log(db: DB, page: int = Query(1,ge=1), context: Administrator = Depends(require('audit.read'))):
     rows=(await db.scalars(select(Audit).order_by(Audit.id.desc()).offset((page-1)*50).limit(51))).all()
     return {'items':[{key:getattr(a,key) for key in ['id','actor_id','action','target','created_at']} for a in rows[:50]],'has_more':len(rows)>50}
-
-@router.get('/sync')
-async def sync_status(db: DB, page: int = Query(1,ge=1), context: Administrator = Depends(require('sync.read'))):
-    rows=(await db.scalars(select(SyncJob).order_by(SyncJob.id.desc()).offset((page-1)*30).limit(31))).all()
-    return {'configured':bool(os.getenv('BOT_DATABASE_PATH')),'items':[{key:getattr(j,key) for key in ['id','product_id','revision','status','attempts','last_error','created_at']} for j in rows[:30]],'has_more':len(rows)>30}
-
-@router.post('/sync/retry')
-async def sync_retry(db: DB, context: Administrator = Depends(require('sync.retry'))):
-    if not os.getenv('BOT_DATABASE_PATH'):
-        raise HTTPException(409,'مسیر دیتابیس ربات روی سرور تنظیم نشده است.')
-    await db.execute(update(SyncJob).where(SyncJob.status!='done').values(status='pending',attempts=0,last_error=''))
-    audit(db,context,'sync.retry','catalog')
-    await db.commit()
-    return {'ok':True}

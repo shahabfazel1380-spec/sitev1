@@ -29,9 +29,21 @@ class CartItemSchema(Schema):
     product_id: int = Field(strict=True, gt=0)
     quantity: int = Field(strict=True, ge=1, le=10)
 
+class CredentialInput(Schema):
+    model_config = ConfigDict(extra='forbid',str_strip_whitespace=False)
+    product_id: int = Field(gt=0)
+    username: str = Field(min_length=1,max_length=254)
+    password: str = Field(min_length=1,max_length=256)
+    @field_validator('password', mode='before')
+    @classmethod
+    def preserve(cls, value):
+        return value
+
 class CheckoutRequest(Schema):
     items: list[CartItemSchema] = Field(min_length=1, max_length=30)
     coupon: str = Field(default='', max_length=40, pattern=r'^[A-Za-z0-9_-]*$')
+    use_wallet: bool = False
+    credentials: list[CredentialInput] = Field(default_factory=list,max_length=300)
 
 def media_url(value):
     if not value:
@@ -58,6 +70,7 @@ class ProductInput(Schema):
     period: str = Field(default='اشتراک یک‌ماهه', min_length=1, max_length=100)
     badge: str = Field(default='', max_length=80)
     available: bool = True
+    require_credentials: bool = False
     published: bool = False
     sort_order: int = Field(default=0, ge=0, le=10000)
     revision: int | None = Field(default=None, ge=1)

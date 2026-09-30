@@ -1,4 +1,4 @@
-import {Store,$,esc,fa,money,symbols} from './store.js';
+import {Store,$,esc,fa,money,symbols} from './store.js?v=3';
 let category='all',query='',timer;
 const normalize=value=>value.toLowerCase().replace(/ي/g,'ی').replace(/ك/g,'ک').replace(/[\u200c\s]+/g,' ').trim();
 function render(){
